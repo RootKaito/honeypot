@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preparando o Ambiente — Posto de Observação</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Posto de Observação</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+
+    <div class="nav-group-label">guia</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Início</a></li>
+      <li><a href="01-arquitetura.html"><span class="n">01</span> Arquitetura &amp; Threat Model</a></li>
+      <li><a href="02-ambiente.html" class="active"><span class="n">02</span> Preparando o Ambiente</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposicao-dashboard.html"><span class="n">04</span> Exposição &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-licoes.html"><span class="n">06</span> Lições Aprendidas</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Abrir menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Posto de Observação</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">capítulo 02</p>
+      <h1>Preparando o Ambiente</h1>
+      <p class="lede">Uma VM VirtualBox fazendo o papel de servidor dedicado: sistema mínimo, rede própria na LAN, acesso hardenizado desde o primeiro boot.</p>
+
+      <div class="callout callout--note">
+        <span class="label">nota</span>
+        <p>Os blocos de comando abaixo indicam onde rodar cada um: <code>host</code> é a sua máquina física, <code>vm</code> é a máquina virtual. Confundir os dois foi, de longe, a fonte de erro mais comum ao longo deste projeto — vale conferir sempre antes de colar.</p>
+      </div>
+
+      <h2>1. Instalar o VirtualBox</h2>
+      <div class="term" data-label="host · terminal">
+<pre><code>sudo apt update
+sudo apt install -y virtualbox
+vboxmanage --version</code></pre>
+      </div>
+
+      <h2>2. Baixar a imagem do sistema convidado</h2>
+      <p>Debian 12 (Bookworm), instalação mínima — leve o suficiente pra rodar como servidor headless, com repositórios estáveis pra tudo que vem depois.</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>mkdir -p ~/vm-isos &amp;&amp; cd ~/vm-isos
+wget https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.11.0-amd64-netinst.iso</code></pre>
+      </div>
+
+      <h2>3. Identificar a interface de rede do host</h2>
+      <p>Necessário pra configurar o modo <strong>Bridged</strong> no próximo passo — é o que faz a VM aparecer na sua rede local como um dispositivo próprio, com IP próprio, em vez de ficar escondida atrás de NAT.</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>ip link show</code></pre>
+      </div>
+      <p>Procure a interface conectada de verdade (estado <code>UP,LOWER_UP</code>) — normalmente algo como <code>enp2s0</code> ou <code>wlan0</code>. Ignore interfaces virtuais de containers/VMs que já existirem (<code>docker0</code>, <code>virbr0</code>, qualquer <code>veth*</code>).</p>
+
+      <h2>4. Criar a VM</h2>
+      <div class="term" data-label="host · terminal">
+<pre><code>VBoxManage createvm --name "honeypot-lab" --ostype Debian_64 --register
+
+VBoxManage modifyvm "honeypot-lab" \
+  --memory 4096 --cpus 2 \
+  --nic1 bridged --bridgeadapter1 <span class="v">SUA_INTERFACE</span> \
+  --boot1 dvd --boot2 disk --boot3 none --boot4 none
+
+<span class="c"># endurecimento: sem clipboard/drag-and-drop compartilhado com o host,
+# sem áudio, sem porta USB nem display remoto</span>
+VBoxManage modifyvm "honeypot-lab" \
+  --clipboard-mode disabled --draganddrop disabled \
+  --usb off --audio-driver none --vrde off
+
+VBoxManage createhd --filename ~/VirtualBox\ VMs/honeypot-lab/honeypot-lab.vdi --size 20000
+VBoxManage storagectl "honeypot-lab" --name "SATA Controller" --add sata --controller IntelAhci
+VBoxManage storageattach "honeypot-lab" --storagectl "SATA Controller" \
+  --port 0 --device 0 --type hdd --medium ~/VirtualBox\ VMs/honeypot-lab/honeypot-lab.vdi
+
+VBoxManage storagectl "honeypot-lab" --name "IDE Controller" --add ide
+VBoxManage storageattach "honeypot-lab" --storagectl "IDE Controller" \
+  --port 0 --device 0 --type dvddrive --medium ~/vm-isos/debian-12.11.0-amd64-netinst.iso</code></pre>
+      </div>
+
+      <h2>5. Instalar o Debian</h2>
+      <div class="term" data-label="host · terminal">
+<pre><code>VBoxManage startvm "honeypot-lab" --type gui</code></pre>
+      </div>
+      <p>No instalador: modo texto, particionamento guiado (disco inteiro), e na seleção de pacotes marque só <strong>SSH server</strong> e <strong>standard system utilities</strong> — nada de ambiente gráfico. Depois do primeiro boot, rode sempre em modo headless:</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>VBoxManage controlvm "honeypot-lab" poweroff
+VBoxManage startvm "honeypot-lab" --type headless</code></pre>
+      </div>
+
+      <h2>6. Gerar uma chave SSH (se ainda não tiver)</h2>
+      <div class="term" data-label="host · terminal">
+<pre><code>ls -al ~/.ssh
+<span class="c"># se não existir id_ed25519.pub:</span>
+ssh-keygen -t ed25519 -C "honeypot-lab"</code></pre>
+      </div>
+      <div class="callout callout--warn">
+        <span class="label">atenção</span>
+        <p>Não copie o arquivo sem o <code>.pub</code> pra lugar nenhum — esse é o privado, fica só na sua máquina.</p>
+      </div>
+
+      <h2>7. Hardening de acesso</h2>
+      <p>Descubra o IP que a VM recebeu (painel do roteador, ou console local com <code>ip a</code>) e conecte:</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>ssh-copy-id usuario@<span class="v">IP_DA_VM</span></code></pre>
+      </div>
+      <p>Depois, dentro da VM já conectada:</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo nano /etc/ssh/sshd_config</code></pre>
+      </div>
+      <div class="term" data-label="/etc/ssh/sshd_config">
+<pre><code>Port 2200
+PasswordAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes</code></pre>
+      </div>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo systemctl restart ssh</code></pre>
+      </div>
+
+      <div class="callout callout--warn">
+        <span class="label">não feche a sessão ainda</span>
+        <p>Antes de encerrar a conexão atual, abra um segundo terminal e confirme que consegue conectar na porta nova (<code>ssh -p 2200 usuario@IP_DA_VM</code>). Se algo estiver errado na configuração e você já tiver fechado a sessão original, fica sem acesso remoto — precisaria voltar pro console gráfico da VM.</p>
+      </div>
+
+      <p>Firewall, restrito à rede local:</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo apt install -y ufw
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow from <span class="v">SUA_SUB_REDE</span>/24 to any port 2200 proto tcp
+sudo ufw enable
+sudo ufw status verbose</code></pre>
+      </div>
+
+      <div class="callout callout--warn">
+        <span class="label">confira o ipv4 e o ipv6</span>
+        <p>Uma regra criada sem restringir a origem (<code>ufw allow 2200/tcp</code>, sem o <code>from</code>) libera a porta pra qualquer IPv4 <strong>e qualquer IPv6</strong> — se sua rede tiver IPv6 público, isso expõe a porta de gestão à internet inteira, sem nenhum port-forward configurado pra ela. Sempre confirme que a saída do <code>ufw status</code> mostra sua sub-rede, não <code>Anywhere</code>.</p>
+      </div>
+
+      <h2>8. Usuário com sudo</h2>
+      <div class="term" data-label="vm · terminal (como root)">
+<pre><code>usermod -aG sudo <span class="v">seu_usuario</span></code></pre>
+      </div>
+      <p>Saia e conecte de novo (ou <code>newgrp sudo</code> na sessão atual) e confirme com <code>sudo whoami</code>.</p>
+
+      <h2>9. Instalar o Docker</h2>
+      <div class="term" data-label="vm · terminal">
+<pre><code>curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+<span class="c"># logout/login pra aplicar o grupo</span>
+
+docker --version
+docker compose version</code></pre>
+      </div>
+
+      <h2>10. Snapshot do estado limpo</h2>
+      <p>Uma vantagem real de rodar isso numa VM: capture esse ponto agora, antes de subir qualquer serviço do laboratório.</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>VBoxManage snapshot "honeypot-lab" take "so-limpo-hardened" \
+  --description "Debian instalado, SSH por chave, UFW ativo"</code></pre>
+      </div>
+      <p>Se algo quebrar mais adiante, volta pra esse estado em segundos:</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>VBoxManage snapshot "honeypot-lab" restore "so-limpo-hardened"</code></pre>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="01-arquitetura.html"><span class="dir">← Voltar</span>Arquitetura &amp; Threat Model</a>
+        <a class="next" href="03-suricata-cowrie.html"><span class="dir">Continuar →</span>IDS + Honeypot</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>

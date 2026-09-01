@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exposição &amp; Dashboard — Posto de Observação</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Posto de Observação</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+
+    <div class="nav-group-label">guia</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Início</a></li>
+      <li><a href="01-arquitetura.html"><span class="n">01</span> Arquitetura &amp; Threat Model</a></li>
+      <li><a href="02-ambiente.html"><span class="n">02</span> Preparando o Ambiente</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposicao-dashboard.html" class="active"><span class="n">04</span> Exposição &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-licoes.html"><span class="n">06</span> Lições Aprendidas</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Abrir menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Posto de Observação</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">capítulo 04</p>
+      <h1>Exposição &amp; Dashboard</h1>
+      <p class="lede">Abrindo o honeypot pra internet de verdade, e montando o painel que mostra o que chega.</p>
+
+      <h2>Verificar CGNAT antes de tudo</h2>
+      <p>Provedores residenciais (fibra, principalmente) às vezes não entregam IP público real — o cliente fica atrás de um NAT compartilhado da própria operadora (CGNAT). Se for o caso, nenhum port-forward vai funcionar, não importa quão certa esteja a configuração.</p>
+      <div class="term" data-label="terminal (dentro da lan)">
+<pre><code>curl -4 ifconfig.me</code></pre>
+      </div>
+      <p>Depois, de um navegador na mesma rede, abra <a href="https://canyouseeme.org" target="_blank" rel="noopener">canyouseeme.org</a>, digite a porta que pretende expor e clique em <strong>Check</strong>. Isso confirma se o forward está alcançável de fora antes de gastar tempo depurando algo que pode ser estruturalmente impossível do seu lado.</p>
+
+      <div class="callout callout--note">
+        <span class="label">nota</span>
+        <p>Se confirmar CGNAT, port-forward tradicional não resolve — as alternativas são pedir IP público ao provedor, ou usar um túnel reverso (Cloudflare Tunnel, por exemplo), o que muda a arquitetura deste guia.</p>
+      </div>
+
+      <h2>Configurar o encaminhamento de porta</h2>
+      <p>No painel do seu roteador (nome do menu varia por fabricante: <em>Port Forwarding</em>, <em>Virtual Server</em>, <em>NAT</em>, <em>Encaminhamento de Portas</em>), crie duas regras:</p>
+
+      <table>
+        <thead><tr><th>Campo</th><th>Regra SSH</th><th>Regra Telnet</th></tr></thead>
+        <tbody>
+          <tr><td>Porta externa</td><td>22</td><td>23</td></tr>
+          <tr><td>Porta interna</td><td>2222</td><td>2223</td></tr>
+          <tr><td>IP interno</td><td colspan="2"><code>IP_DA_VM</code></td></tr>
+          <tr><td>Protocolo</td><td colspan="2">TCP</td></tr>
+        </tbody>
+      </table>
+
+      <p>Teste de fora de verdade (dados móveis, não Wi-Fi da mesma rede):</p>
+      <div class="term" data-label="terminal (rede externa)">
+<pre><code>ssh -p 22 root@<span class="v">SEU_IP_PUBLICO</span></code></pre>
+      </div>
+      <p>Deve cair no shell falso do Cowrie.</p>
+
+      <h2>Centralizar logs: Grafana Alloy</h2>
+      <p>O agente que lê os arquivos de log e envia pro banco de dados de logs (Loki) roda nativo na VM — não em container, pelo mesmo motivo do Suricata: precisa de acesso direto ao sistema de arquivos.</p>
+
+      <div class="callout callout--note">
+        <span class="label">sobre a escolha</span>
+        <p>O agente tradicionalmente usado com o Loki (Promtail) foi descontinuado — o substituto oficial é o <strong>Grafana Alloy</strong>, que usa uma linguagem de configuração própria (River) em vez de YAML.</p>
+      </div>
+
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo mkdir -p /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/grafana.asc https://apt.grafana.com/gpg-full.key
+sudo chmod 644 /etc/apt/keyrings/grafana.asc
+echo "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+
+sudo apt update
+sudo apt install -y alloy</code></pre>
+      </div>
+
+      <div class="term" data-label="/etc/alloy/config.alloy">
+<pre><code>local.file_match "suricata" {
+  path_targets = [{"__path__" = "/var/log/suricata/eve.json", "job" = "suricata"}]
+}
+
+local.file_match "cowrie" {
+  path_targets = [{"__path__" = "/var/lib/docker/volumes/cowrie-honeypot_cowrie-var/_data/log/cowrie/cowrie.json", "job" = "cowrie"}]
+}
+
+loki.source.file "suricata_tail" {
+  targets    = local.file_match.suricata.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.source.file "cowrie_tail" {
+  targets    = local.file_match.cowrie.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}</code></pre>
+      </div>
+
+      <div class="callout callout--warn">
+        <span class="label">permissão que quase sempre falta</span>
+        <p>O Alloy roda como usuário de sistema próprio (<code>alloy</code>), não root. A pasta <code>/var/lib/docker</code> normalmente vem com permissão <code>drwx--x---</code> — só root e o grupo root atravessam. Isso bloqueia o Alloy de chegar no log do Cowrie, mesmo o arquivo final estando com leitura liberada. Resolva com uma ACL pontual, sem abrir a pasta pra mais ninguém:</p>
+      </div>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo setfacl -m u:alloy:x /var/lib/docker
+getfacl /var/lib/docker | grep alloy   <span class="c"># confirma: user:alloy:--x</span>
+
+sudo systemctl enable --now alloy
+sudo journalctl -u alloy --since "30 seconds ago" --no-pager | grep -i tailing</code></pre>
+      </div>
+      <p>Devem aparecer duas linhas <code>"start tailing file"</code> — uma pro Suricata, uma pro Cowrie.</p>
+
+      <h2>Loki + Grafana</h2>
+      <p>Os dois rodam em containers separados, então precisam de uma rede Docker compartilhada pra se enxergarem — <code>127.0.0.1</code> de dentro de um container aponta pra ele mesmo, não pro vizinho.</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>docker network create dashboard-net
+
+mkdir -p ~/honeypot-dashboard &amp;&amp; cd ~/honeypot-dashboard
+wget https://raw.githubusercontent.com/grafana/loki/v3.7.0/cmd/loki/loki-local-config.yaml -O loki-config.yaml
+
+docker run --name loki -d \
+  --network dashboard-net \
+  -v $(pwd):/mnt/config \
+  -p 127.0.0.1:3100:3100 \
+  grafana/loki:3.7.0 -config.file=/mnt/config/loki-config.yaml
+
+docker run --name grafana -d \
+  --network dashboard-net \
+  -p 127.0.0.1:3000:3000 \
+  grafana/grafana:latest
+
+<span class="c"># garanta que sobrevivem a um reboot da VM</span>
+docker update --restart unless-stopped loki grafana</code></pre>
+      </div>
+
+      <div class="callout callout--tip">
+        <span class="label">nome do container, não ip</span>
+        <p>Dentro da mesma rede Docker, os containers se resolvem pelo nome via DNS interno — use <code>http://loki:3100</code> como URL do Data Source no Grafana, não <code>127.0.0.1</code>.</p>
+      </div>
+
+      <p>Acesse o Grafana (que está só em <code>127.0.0.1</code>) via túnel SSH:</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>ssh -p 2200 -L 3000:127.0.0.1:3000 usuario@<span class="v">IP_DA_VM</span></code></pre>
+      </div>
+      <p>Com o túnel aberto, acesse <code>http://localhost:3000</code> no navegador da sua máquina.</p>
+
+      <h2>Montando os painéis</h2>
+      <ol>
+        <li><strong>Connections → Data sources → Add data source → Loki</strong>, URL <code>http://loki:3100</code>, <strong>Save &amp; test</strong>.</li>
+        <li><strong>Dashboards → New → New Dashboard → Add visualization</strong>, escolha Loki como fonte.</li>
+        <li>No editor da query, clique em <strong>Code</strong> (o modo padrão é visual e não aceita colar a query direto) e cole uma das consultas abaixo.</li>
+      </ol>
+
+      <h3>Tentativas no honeypot ao longo do tempo</h3>
+      <p>Tipo de visualização: <em>Time series</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>sum(count_over_time({job="cowrie"}[5m]))</code></pre>
+      </div>
+
+      <h3>Alertas do Suricata por severidade</h3>
+      <p>Tipo de visualização: <em>Bar chart</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>sum by (severity) (count_over_time({job="suricata"} | json | alert_severity != "" [5m]))</code></pre>
+      </div>
+
+      <h3>Top IPs de origem</h3>
+      <p>Tipo de visualização: <em>Table</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>topk(10, sum by (src_ip) (count_over_time({job="cowrie"} | json [1h])))</code></pre>
+      </div>
+
+      <div class="callout callout--note">
+        <span class="label">nota</span>
+        <p>O painel de severidade provavelmente fica vazio no início — o ruleset padrão do Suricata dispara mais por padrão/contagem (várias tentativas de brute-force num intervalo, por exemplo) do que por conexão isolada. Ele começa a preencher conforme tráfego real de ataque for chegando.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="03-suricata-cowrie.html"><span class="dir">← Voltar</span>IDS + Honeypot</a>
+        <a class="next" href="05-troubleshooting.html"><span class="dir">Continuar →</span>Troubleshooting</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>

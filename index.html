@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Posto de Observação — Honeypot + IDS em laboratório</title>
+<meta name="description" content="Tutorial completo: monte um honeypot (Cowrie) correlacionado com um IDS (Suricata) e um dashboard (Grafana + Loki) num laboratório isolado, do zero até tráfego real da internet.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Posto de Observação</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+
+    <div class="nav-group-label">guia</div>
+    <ul class="nav-list">
+      <li><a href="index.html" class="active"><span class="n">00</span> Início</a></li>
+      <li><a href="01-arquitetura.html"><span class="n">01</span> Arquitetura &amp; Threat Model</a></li>
+      <li><a href="02-ambiente.html"><span class="n">02</span> Preparando o Ambiente</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposicao-dashboard.html"><span class="n">04</span> Exposição &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-licoes.html"><span class="n">06</span> Lições Aprendidas</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Abrir menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Posto de Observação</span>
+    </div>
+
+    <div class="content">
+      <div class="hero">
+        <p class="eyebrow">tutorial · laboratório de segurança defensiva</p>
+        <h1>Um honeypot, um IDS observando ele, e um dashboard mostrando o que aparece.</h1>
+        <p class="lede">Este guia monta, do zero, um laboratório isolado onde um serviço SSH/Telnet falso (Cowrie) recebe tráfego real e não solicitado da internet, um sensor de rede (Suricata) observa e classifica cada pacote, e um dashboard (Grafana + Loki) mostra os dois lados da história em tempo real.</p>
+      </div>
+
+      <div class="hero-diagram">
+        <svg viewBox="0 0 760 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama de arquitetura: internet e analista se conectam à VM através do roteador e de um túnel SSH; dentro da VM, Cowrie e Suricata trocam observação, e os logs seguem por Alloy, Loki e Grafana.">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" style="fill:var(--text-faint)"/>
+            </marker>
+            <marker id="arrowAmber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" style="fill:var(--amber)"/>
+            </marker>
+          </defs>
+
+          <!-- Internet -->
+          <rect x="16" y="30" width="130" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="81" y="63" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">Internet</text>
+
+          <!-- Você -->
+          <rect x="16" y="374" width="130" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="81" y="398" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">Você</text>
+          <text x="81" y="415" text-anchor="middle" style="font-family:var(--font-mono);font-size:10px;fill:var(--text-faint)">(analista)</text>
+
+          <!-- Roteador -->
+          <rect x="210" y="30" width="150" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="285" y="58" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">Roteador</text>
+          <text x="285" y="74" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--amber)">só 2 portas encaminhadas</text>
+
+          <!-- VM outer -->
+          <rect x="420" y="14" width="324" height="432" rx="12" style="fill:none;stroke:var(--border)" stroke-dasharray="4 4"/>
+          <text x="438" y="34" style="font-family:var(--font-mono);font-size:10px;fill:var(--text-faint)">VM (VirtualBox · Debian)</text>
+
+          <!-- Cowrie -->
+          <rect x="440" y="54" width="130" height="60" rx="8" style="fill:var(--amber-soft);stroke:var(--amber-border)"/>
+          <text x="505" y="80" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--amber)">Cowrie</text>
+          <text x="505" y="96" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--text-faint)">honeypot ssh/telnet</text>
+
+          <!-- Suricata -->
+          <rect x="586" y="54" width="140" height="60" rx="8" style="fill:var(--teal-soft);stroke:var(--teal-border)"/>
+          <text x="656" y="80" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--teal)">Suricata</text>
+          <text x="656" y="96" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--text-faint)">ids / af-packet</text>
+
+          <!-- double arrow cowrie <-> suricata -->
+          <line x1="572" y1="84" x2="584" y2="84" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="584" y1="92" x2="572" y2="92" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <text x="578" y="76" text-anchor="middle" style="font-family:var(--font-mono);font-size:8px;fill:var(--text-faint)">observa</text>
+
+          <!-- Alloy -->
+          <rect x="440" y="164" width="284" height="46" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="582" y="192" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--text)">Alloy</text>
+
+          <!-- Loki -->
+          <rect x="440" y="244" width="284" height="46" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="582" y="272" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--text)">Loki</text>
+
+          <!-- Grafana -->
+          <rect x="440" y="324" width="284" height="46" rx="8" style="fill:var(--amber-soft);stroke:var(--amber-border)"/>
+          <text x="582" y="352" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--amber)">Grafana</text>
+          <text x="582" y="337" text-anchor="middle" style="font-family:var(--font-mono);font-size:8px;fill:var(--text-faint)">127.0.0.1 · nunca exposto</text>
+
+          <!-- vertical arrows -->
+          <line x1="582" y1="114" x2="582" y2="162" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="582" y1="210" x2="582" y2="242" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="582" y1="290" x2="582" y2="322" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+
+          <!-- internet -> roteador -->
+          <line x1="146" y1="58" x2="208" y2="58" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <!-- roteador -> vm -->
+          <line x1="360" y1="58" x2="438" y2="58" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+
+          <!-- você -> grafana (tunnel) -->
+          <path d="M146,402 C 300,402 300,347 438,347" style="fill:none;stroke:var(--amber);stroke-width:1.5" stroke-dasharray="3 4" marker-end="url(#arrowAmber)"/>
+          <text x="270" y="418" style="font-family:var(--font-mono);font-size:9px;fill:var(--amber)">túnel SSH (-L 3000)</text>
+        </svg>
+      </div>
+
+      <div class="callout callout--note">
+        <span class="label">sobre este guia</span>
+        <p>Escrito a partir de uma implementação real, incluindo os erros de configuração que apareceram no meio do caminho — eles viram uma seção própria (capítulo 5), porque são exatamente o tipo de coisa que qualquer pessoa seguindo esse caminho também vai encontrar.</p>
+      </div>
+
+      <h2>O que você vai construir</h2>
+      <p>Um sistema pequeno, mas completo, com quatro peças que se apoiam: um serviço falso que parece vulnerável e registra tudo que um invasor tenta fazer; um sensor de rede que observa e classifica esse mesmo tráfego de forma independente; um pipeline de logs que centraliza os dois; e um painel visual pra acompanhar tudo isso ao vivo.</p>
+
+      <div class="readout">
+        <span class="readout-title">stack utilizado</span>
+        <dl class="readout-grid">
+          <div class="readout-row"><dt>Honeypot</dt><dd>Cowrie</dd></div>
+          <div class="readout-row"><dt>IDS</dt><dd>Suricata</dd></div>
+          <div class="readout-row"><dt>Coleta de logs</dt><dd>Grafana Alloy</dd></div>
+          <div class="readout-row"><dt>Armazenamento</dt><dd>Loki</dd></div>
+          <div class="readout-row"><dt>Visualização</dt><dd>Grafana</dd></div>
+          <div class="readout-row"><dt>Ambiente</dt><dd>VirtualBox + Debian 12</dd></div>
+        </dl>
+      </div>
+
+      <h2>Pra quem é este guia</h2>
+      <p>Pra quem já tem alguma familiaridade com Linux, linha de comando e Docker, e quer um projeto prático de segurança defensiva — seja como portfólio, como aprendizado de redes, ou só por curiosidade de ver o que realmente bate na porta de um serviço exposto à internet.</p>
+
+      <h2>Capítulos</h2>
+      <div class="chapters">
+        <a class="chapter-card" href="01-arquitetura.html">
+          <span class="num">01</span>
+          <span class="info"><h3>Arquitetura &amp; Threat Model</h3><p>Por que esse desenho, e o que pode dar errado no próprio laboratório.</p></span>
+        </a>
+        <a class="chapter-card" href="02-ambiente.html">
+          <span class="num">02</span>
+          <span class="info"><h3>Preparando o Ambiente</h3><p>VM isolada, hardening de acesso, Docker.</p></span>
+        </a>
+        <a class="chapter-card" href="03-suricata-cowrie.html">
+          <span class="num">03</span>
+          <span class="info"><h3>IDS + Honeypot</h3><p>Instalando o Suricata e o Cowrie, e confirmando que um vê o outro.</p></span>
+        </a>
+        <a class="chapter-card" href="04-exposicao-dashboard.html">
+          <span class="num">04</span>
+          <span class="info"><h3>Exposição &amp; Dashboard</h3><p>Abrindo pra internet de verdade, e montando o painel de observação.</p></span>
+        </a>
+        <a class="chapter-card" href="05-troubleshooting.html">
+          <span class="num">05</span>
+          <span class="info"><h3>Troubleshooting</h3><p>Os erros reais encontrados nessa implementação, e como resolver cada um.</p></span>
+        </a>
+        <a class="chapter-card" href="06-licoes.html">
+          <span class="num">06</span>
+          <span class="info"><h3>Lições Aprendidas</h3><p>O que fica depois do projeto, e pra onde ir a partir daqui.</p></span>
+        </a>
+      </div>
+
+      <div class="page-nav">
+        <a class="next" href="01-arquitetura.html"><span class="dir">Começar →</span>Arquitetura &amp; Threat Model</a>
+      </div>
+
+      <div class="site-footer">Laboratório pessoal de segurança defensiva · publicado como material educacional</div>
+    </div>
+  </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>

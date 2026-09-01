@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lições Aprendidas — Posto de Observação</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Posto de Observação</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+
+    <div class="nav-group-label">guia</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Início</a></li>
+      <li><a href="01-arquitetura.html"><span class="n">01</span> Arquitetura &amp; Threat Model</a></li>
+      <li><a href="02-ambiente.html"><span class="n">02</span> Preparando o Ambiente</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposicao-dashboard.html"><span class="n">04</span> Exposição &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-licoes.html" class="active"><span class="n">06</span> Lições Aprendidas</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Abrir menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Posto de Observação</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">capítulo 06</p>
+      <h1>Lições Aprendidas</h1>
+      <p class="lede">O que fica depois de montar isso do zero, e por onde continuar.</p>
+
+      <h2>Princípios que se confirmaram na prática</h2>
+      <ul>
+        <li><strong>Duas fontes de verdade independentes valem mais que uma sofisticada.</strong> O honeypot e o IDS nunca dependeram um do outro pra funcionar — quando um teve problema de configuração, o outro continuou registrando normalmente, e essa independência foi o que tornou o diagnóstico possível em vários pontos.</li>
+        <li><strong>Container minimalista corta dois lados.</strong> A imagem do Cowrie não ter utilitários básicos é ótimo pra reduzir superfície de ataque, mas também quebra hábitos comuns de debug (como usar <code>docker exec ... tail</code>) — vale sempre verificar o que uma imagem "oficial" realmente contém antes de assumir.</li>
+        <li><strong>IPv4 e IPv6 são duas superfícies de exposição diferentes.</strong> Regra de firewall pensada só em IPv4 pode deixar um buraco inteiro do lado do IPv6, sem nenhum sinal óbvio de que isso aconteceu.</li>
+        <li><strong>"Sem erro" não é o mesmo que "funcionando".</strong> Mais de uma vez, um serviço subiu sem reclamar (Suricata com interface errada, Alloy sem permissão de leitura) e simplesmente não fez o que devia, silenciosamente. Validar o resultado fim-a-fim importa mais do que confiar em "não deu erro".</li>
+        <li><strong>Snapshots mudam a relação com o risco.</strong> Ter a opção de voltar a um estado limpo em segundos deixa mais seguro testar mudanças mais arriscadas do que seria razoável fazer em hardware físico sem essa rede de segurança.</li>
+      </ul>
+
+      <div class="callout callout--signal">
+        <span class="label">o resultado final</span>
+        <p>Um honeypot recebendo tentativas reais e não solicitadas da internet, um IDS classificando esse tráfego de forma independente, e um dashboard mostrando os dois lados da história em tempo real — construído, quebrado, e consertado o suficiente pra virar este guia.</p>
+      </div>
+
+      <h2>Próximos passos possíveis</h2>
+      <ul>
+        <li><strong>Enriquecimento de geolocalização.</strong> Um estágio de lookup GeoIP (MaxMind GeoLite2) antes dos logs chegarem no Loki permite um painel de mapa mostrando de onde vêm as tentativas.</li>
+        <li><strong>Mais protocolos no honeypot.</strong> Cowrie cobre SSH/Telnet; existem honeypots especializados em outros serviços (HTTP, bancos de dados, RDP) que podem rodar em paralelo, cada um na sua própria rede isolada.</li>
+        <li><strong>Alertas ativos.</strong> Em vez de só olhar o dashboard, configurar o Grafana pra notificar (email, webhook) quando um padrão específico aparecer — um pico de tentativas, ou uma assinatura de severidade alta do Suricata.</li>
+        <li><strong>Migrar pra hardware dedicado.</strong> Se o laboratório está numa VM na máquina do dia a dia, vale considerar mover pra um dispositivo próprio assim que o setup estiver validado — reduz o pior cenário de uma falha de isolamento de volta pra "só aquele dispositivo", não a máquina de trabalho.</li>
+      </ul>
+
+      <h2>Fontes e documentação oficial</h2>
+      <ul>
+        <li><a href="https://docs.suricata.io/en/latest/quickstart.html" target="_blank" rel="noopener">Suricata — Quickstart guide</a></li>
+        <li><a href="https://docs.suricata.io/en/latest/rule-management/adding-your-own-rules.html" target="_blank" rel="noopener">Suricata — Adding Your Own Rules</a></li>
+        <li><a href="https://github.com/cowrie/cowrie" target="_blank" rel="noopener">Cowrie — repositório oficial</a></li>
+        <li><a href="https://hub.docker.com/r/cowrie/cowrie" target="_blank" rel="noopener">Cowrie — imagem Docker oficial</a></li>
+        <li><a href="https://grafana.com/docs/loki/latest/setup/install/docker/" target="_blank" rel="noopener">Grafana Loki — Install with Docker</a></li>
+        <li><a href="https://grafana.com/docs/alloy/latest/set-up/install/linux/" target="_blank" rel="noopener">Grafana Alloy — Install on Linux</a></li>
+        <li><a href="https://grafana.com/docs/alloy/latest/monitor/monitor-logs-from-file/" target="_blank" rel="noopener">Grafana Alloy — Monitor logs from a local file</a></li>
+        <li><a href="https://www.virtualbox.org/manual/ch08.html" target="_blank" rel="noopener">VBoxManage — referência de comandos</a></li>
+      </ul>
+
+      <div class="callout callout--note">
+        <span class="label">licença de uso</span>
+        <p>Este material foi escrito como registro pessoal de um laboratório de segurança defensiva, com fins educacionais. Sinta-se à vontade pra adaptar, republicar com atribuição, ou usar como base pro seu próprio projeto.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="05-troubleshooting.html"><span class="dir">← Voltar</span>Troubleshooting</a>
+        <a class="next" href="index.html"><span class="dir">Início →</span>Voltar ao começo</a>
+      </div>
+
+      <div class="site-footer">Posto de Observação — honeypot + ids + dashboard · fim do guia</div>
+    </div>
+  </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>
