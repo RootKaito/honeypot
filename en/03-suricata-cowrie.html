@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IDS + Honeypot — Observation Post</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../03-suricata-cowrie.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html" class="active"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">chapter 03</p>
+      <h1>IDS + Honeypot</h1>
+      <p class="lede">Suricata watching the network, Cowrie pretending to be an easy target — and confirmation that one correctly sees the other.</p>
+
+      <h2>Suricata</h2>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo apt install -y suricata
+suricata --build-info | head -20</code></pre>
+      </div>
+
+      <p>Before configuring, find the real network interface name <strong>inside the VM</strong> — it's almost never <code>eth0</code> in virtualized environments:</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>ip a</code></pre>
+      </div>
+
+      <div class="callout callout--warn">
+        <span class="label">common mistake</span>
+        <p>In VirtualBox VMs the name is usually <code>enp0s3</code>; on other hypervisors it can be different still. Configuring Suricata with an interface name that doesn't actually exist on the machine doesn't produce any error on startup — it simply never captures a single packet, and the symptom becomes "no alert ever shows up," with no clear clue why.</p>
+      </div>
+
+      <div class="term" data-label="/etc/suricata/suricata.yaml">
+<pre><code>af-packet:
+  - interface: <span class="v">YOUR_INTERFACE</span>
+
+vars:
+  address-groups:
+    HOME_NET: "[<span class="v">VM_IP</span>/32]"</code></pre>
+      </div>
+
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo suricata-update
+sudo suricata -T -c /etc/suricata/suricata.yaml -v
+sudo systemctl enable --now suricata
+sudo systemctl status suricata</code></pre>
+      </div>
+
+      <h3>Test rule</h3>
+      <p>Before relying on real attack traffic (which only triggers count/pattern-based rules), confirm the alert pipeline works with something simple:</p>
+      <div class="term" data-label="/etc/suricata/rules/local.rules">
+<pre><code>alert icmp any any -> $HOME_NET any (msg:"Local test: ICMP received"; sid:1000001; rev:1;)</code></pre>
+      </div>
+      <p>Confirm <code>local.rules</code> is listed under <code>rule-files</code> in <code>suricata.yaml</code>, restart, and test from another machine on the network:</p>
+      <div class="term" data-label="terminal (another machine on the LAN)">
+<pre><code>ping -c 3 <span class="v">VM_IP</span></code></pre>
+      </div>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo tail -n 5 /var/log/suricata/eve.json | jq 'select(.event_type=="alert")'</code></pre>
+      </div>
+
+      <h2>Cowrie</h2>
+      <p>Create the isolated Docker network <strong>before</strong> bringing up the container — forgetting this step is the most common cause of errors at <code>compose up</code> time:</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>docker network create honeypot-net</code></pre>
+      </div>
+
+      <div class="term" data-label="~/cowrie-honeypot/docker-compose.yaml">
+<pre><code>services:
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: cowrie
+    restart: unless-stopped
+    networks:
+      - honeypot-net
+    ports:
+      - "2222:2222"
+      - "2223:2223"
+    volumes:
+      - cowrie-etc:/cowrie/cowrie-git/etc
+      - cowrie-var:/cowrie/cowrie-git/var
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+    environment:
+      - COWRIE_HONEYPOT_HOSTNAME=web-prod-02
+      - COWRIE_TELNET_ENABLED=yes
+
+networks:
+  honeypot-net:
+    external: true
+
+volumes:
+  cowrie-etc:
+  cowrie-var:</code></pre>
+      </div>
+
+      <div class="term" data-label="vm · terminal">
+<pre><code>docker compose up -d
+docker compose ps</code></pre>
+      </div>
+
+      <div class="callout callout--tip">
+        <span class="label">disguise</span>
+        <p>Avoid hostnames close to the tool's default pattern (<code>svr04</code>) — something like <code>srv-04</code> is still recognizable to anyone who's seen a Cowrie before. Go for something genuinely generic, like in the example above.</p>
+      </div>
+
+      <h3>Inspect before exposing</h3>
+      <div class="term" data-label="vm · terminal">
+<pre><code>ssh -p 2222 root@localhost
+<span class="c"># any username/password is accepted — the honeypot's trap
+# run a few commands, then `exit`</span></code></pre>
+      </div>
+
+      <div class="callout callout--note">
+        <span class="label">note</span>
+        <p>The official Cowrie image is minimal on purpose — it has no <code>tail</code> or other utilities inside the container. To see the log, use <code>docker logs cowrie --tail 20</code> instead of <code>docker exec</code>.</p>
+      </div>
+
+      <h2>Confirm Suricata sees Cowrie</h2>
+      <p>From another machine on the network:</p>
+      <div class="term" data-label="terminal (another machine on the LAN)">
+<pre><code>ssh -p 2222 fake_user@<span class="v">VM_IP</span></code></pre>
+      </div>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo tail -n 20 /var/log/suricata/eve.json | jq 'select(.dest_port==2222)'</code></pre>
+      </div>
+
+      <div class="callout callout--signal">
+        <span class="label">confirmed signal</span>
+        <p><code>dest_port: 2222</code> matches Cowrie's external port — proof that Suricata sees the packet before Docker's NAT rewrite. And <code>src_ip</code> being the real IP of another machine (not something like <code>172.18.0.1</code>, which is Docker's internal gateway) confirms the traffic actually went over the real network, not just the container's internal bridge.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="02-environment.html"><span class="dir">← Back</span>Setting Up the Environment</a>
+        <a class="next" href="04-exposure-dashboard.html"><span class="dir">Continue →</span>Exposure &amp; Dashboard</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Troubleshooting — Observation Post</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../05-troubleshooting.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html" class="active"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">chapter 05</p>
+      <h1>Troubleshooting</h1>
+      <p class="lede">Every error below really happened in a real implementation of this guide — none of these are hypothetical. Click any symptom to see the cause and the fix.</p>
+
+      <h2>Network &amp; packet capture</h2>
+
+      <details class="trouble">
+        <summary>Suricata generates no alert at all, even with the ICMP test</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>The interface name configured under <code>af-packet</code> doesn't actually exist on the machine — usually because it was copied from another context (<code>eth0</code>, common in generic guides or physical hardware, while VMs tend to use <code>enp0s3</code> or similar). Suricata doesn't error out when started with a wrong interface, it just never captures anything.</p>
+          <h4>fix</h4>
+          <p>Run <code>ip a</code> on the machine itself, confirm the real name, and update the <code>interface</code> field under <code>af-packet</code> in <code>suricata.yaml</code>. Also check that <code>HOME_NET</code> points to the machine's real IP, not a sample address.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary>Cowrie logs show source IP <code>172.18.0.1</code> instead of the expected IP</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>That's the Docker network's internal gateway — it shows up when the test is done from inside the VM's own host (<code>ssh -p 2222 root@localhost</code>), not from another point on the network.</p>
+          <h4>fix</h4>
+          <p>Not a configuration error. To validate "real" traffic capture, always test from <strong>another</strong> machine on the network, never from inside the VM itself.</p>
+        </div>
+      </details>
+
+      <h2>SSH access</h2>
+
+      <details class="trouble">
+        <summary><code>Connection refused</code> when trying to SSH on a port that worked before</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>The <code>sshd</code> service may have gone back to listening on the default port (22) instead of the configured management port — an upgrade of the <code>openssh-server</code> package can restore the original <code>sshd_config</code> if the package manager treats the file as unmodified, depending on how a conflict prompt was answered.</p>
+          <h4>fix</h4>
+          <p>Confirm with <code>sudo ss -tlnp | grep ssh</code> which port it's actually listening on. If the hardening lines in <code>sshd_config</code> are commented out (with <code>#</code> in front), uncomment them and restart the service. Prevention: <code>sudo apt-mark hold openssh-server</code> once everything has stabilized.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary><code>Permission denied (publickey)</code> even with the key configured</summary>
+        <div class="trouble-body">
+          <h4>most common cause</h4>
+          <p>Running the SSH command with <code>sudo</code> in front changes which user (and therefore which private key) is used — <code>sudo ssh ...</code> looks for the key in <code>/root/.ssh/</code>, not your normal user's folder.</p>
+          <h4>second possible cause</h4>
+          <p>The public key was never actually copied into the right user's <code>authorized_keys</code> — especially easy to happen if clipboard sharing between host and VM is disabled (recommended for security) and the key was pasted manually, with a character lost along the way.</p>
+          <h4>fix</h4>
+          <p>Never put <code>sudo</code> in front of a plain <code>ssh</code> command. To copy the key without relying on manual pasting, use <code>ssh-copy-id -p PORT user@IP</code> — avoids the problem entirely.</p>
+        </div>
+      </details>
+
+      <h2>Docker &amp; containers</h2>
+
+      <details class="trouble">
+        <summary><code>network ... declared as external, but could not be found</code></summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p><code>docker-compose.yaml</code> references a network marked <code>external: true</code> — meaning it expects the network to already exist — but it was never created.</p>
+          <h4>fix</h4>
+          <p><code>docker network create network-name</code> before <code>docker compose up</code>.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary><code>exec: "tail": executable file not found in $PATH</code> inside the Cowrie container</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>The official Cowrie image is minimal on purpose (fewer binaries = smaller attack surface if someone escapes the sandbox) — it doesn't include <code>tail</code> or other coreutils utilities.</p>
+          <h4>fix</h4>
+          <p>Use <code>docker logs cowrie --tail 20</code> (reads via Docker's own log driver, doesn't depend on anything inside the container) or read the file directly from the volume, on the host.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary>Grafana: <code>Unable to connect with Loki</code></summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>Grafana and Loki running in separate Docker containers don't share <code>127.0.0.1</code> — each container has its own isolated loopback. Using <code>http://127.0.0.1:3100</code> as the Data Source URL points Grafana at itself, not at Loki.</p>
+          <h4>fix</h4>
+          <p>Put both containers on the same dedicated Docker network and use the <strong>container name</strong> as the hostname (<code>http://loki:3100</code>) — resolved via Docker's internal DNS, available only between containers on the same network.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary>Query in Grafana Explore (<code>{job="cowrie"}</code>) always returns no results</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>Alloy runs as a non-root system user. The <code>/var/lib/docker</code> folder usually has <code>drwx--x---</code> permissions, which blocks users outside the <code>root</code> group from even traversing that folder — even though the final log file has read access open, the chain breaks somewhere in the middle.</p>
+          <h4>how to diagnose</h4>
+          <p><code>sudo namei -l /full/path/to/file.json</code> lists the permissions of every folder in the path, one per line — shows exactly where the chain breaks.</p>
+          <h4>fix</h4>
+          <p><code>sudo setfacl -m u:alloy:x /var/lib/docker</code> — grants traverse permission only to Alloy's user, without opening the folder to anyone else.</p>
+        </div>
+      </details>
+
+      <h2>Internet exposure</h2>
+
+      <details class="trouble">
+        <summary>External SSH just hangs, no response at all (no refusal, no clear timeout)</summary>
+        <div class="trouble-body">
+          <h4>possible causes</h4>
+          <p>The port-forwarding rule isn't configured on the router yet, or the internet provider uses CGNAT (carrier-shared NAT) — in that second case, the packet never even reaches your router.</p>
+          <h4>fix</h4>
+          <p>Confirm the real public IP with <code>curl -4 ifconfig.me</code> and test with <a href="https://canyouseeme.org" target="_blank" rel="noopener">canyouseeme.org</a> before insisting on tweaking the router's configuration. If CGNAT is confirmed, traditional port-forwarding isn't an option — consider asking the provider for a public IP or using a reverse tunnel.</p>
+        </div>
+      </details>
+
+      <details class="trouble">
+        <summary>Firewall opening the management port to "Anywhere" instead of the local network</summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>A rule created without restricting the source (<code>ufw allow PORT/tcp</code>, without <code>from</code>) opens the port to any IPv4 <strong>and any IPv6</strong> — IPv6 doesn't go through the router's NAT the way IPv4 does, so this can expose the port to the internet even with no port-forward configured at all.</p>
+          <h4>fix</h4>
+          <pre class="term-plain">sudo ufw delete allow PORT/tcp
+sudo ufw allow from YOUR_SUBNET/24 to any port PORT proto tcp</pre>
+          <p>Confirm in <code>ufw status verbose</code> that it shows your subnet, not <code>Anywhere</code>, and that there's no leftover <code>(v6)</code> line.</p>
+        </div>
+      </details>
+
+      <h2>Discontinued tools</h2>
+
+      <details class="trouble">
+        <summary>Downloading Promtail returns <code>404 Not Found</code></summary>
+        <div class="trouble-body">
+          <h4>cause</h4>
+          <p>Promtail was officially discontinued and removed from Loki's release repository — it's not a matter of the wrong version, the binary simply no longer exists.</p>
+          <h4>fix</h4>
+          <p>Use <strong>Grafana Alloy</strong> instead — same role (log collection agent), different configuration (River language instead of YAML). Details in chapter 4.</p>
+        </div>
+      </details>
+
+      <h2>Normal behavior (not a bug)</h2>
+
+      <details class="trouble">
+        <summary>Loki responds <code>"Ingester not ready"</code> for several minutes after starting up</summary>
+        <div class="trouble-body">
+          <h4>what's happening</h4>
+          <p>This is expected — Loki's internal "ring" stabilization process can take anywhere from 15 seconds to 1-2 minutes, depending on the machine. It's not a hang or a configuration error.</p>
+          <h4>when to worry</h4>
+          <p>If it goes past 2-3 minutes without ever becoming <code>ready</code>, then it's worth investigating — check the system clock (VMs sometimes drift) and the container logs with <code>docker logs loki</code>.</p>
+        </div>
+      </details>
+
+      <div class="page-nav">
+        <a class="prev" href="04-exposure-dashboard.html"><span class="dir">← Back</span>Exposure &amp; Dashboard</a>
+        <a class="next" href="06-lessons-learned.html"><span class="dir">Continue →</span>Lessons Learned</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>

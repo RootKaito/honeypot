@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architecture &amp; Threat Model — Observation Post</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../01-arquitetura.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html" class="active"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">chapter 01</p>
+      <h1>Architecture &amp; Threat Model</h1>
+      <p class="lede">Before installing anything, it's worth understanding why the pieces are separated the way they are — and what can go wrong in the lab itself, not just in the honeypot.</p>
+
+      <h2>The four pieces</h2>
+      <p>The honeypot (<strong>Cowrie</strong>) and the network sensor (<strong>Suricata</strong>) watch the same traffic in two different, independent ways. Cowrie pretends to be a vulnerable SSH/Telnet server and logs everything a visitor tries to do inside it. Suricata knows nothing about that theater — it just watches network packets arriving on the interface, and recognizes patterns (an SSH attempt, a port scan, a known exploit signature) regardless of what's behind them.</p>
+      <p>That independence is the whole point: if Cowrie fails silently, or if someone finds a way to escape its sandbox, Suricata keeps seeing the traffic anyway — it operates at a layer below, straight on the network interface.</p>
+
+      <div class="callout callout--tip">
+        <span class="label">why this works even with the container in the middle</span>
+        <p>Suricata captures in <code>af-packet</code> mode, which operates below the layer where Docker rewrites addresses via NAT/iptables. That means it sees the real external port (the one exposed to the internet), not the container's internal port — correlation between the two systems stays consistent even with Docker in the middle.</p>
+      </div>
+
+      <h2>Where each piece runs</h2>
+      <div class="readout">
+        <span class="readout-title">component placement</span>
+        <dl class="readout-grid">
+          <div class="readout-row"><dt>Cowrie</dt><dd>Docker, isolated network</dd></div>
+          <div class="readout-row"><dt>Suricata</dt><dd>native (outside any container)</dd></div>
+          <div class="readout-row"><dt>Alloy</dt><dd>native (outside any container)</dd></div>
+          <div class="readout-row"><dt>Loki + Grafana</dt><dd>Docker, own network</dd></div>
+        </dl>
+      </div>
+      <p>Suricata runs native, outside any container, because it needs direct, low-level access to the network interface — adding a layer of Docker network virtualization in the middle only adds complexity with no benefit. Cowrie, on the other hand, is exactly the component that benefits most from isolation, since it's the one deliberately exposed to the world — so it lives inside a container, on a dedicated Docker network, with no route to anything else on the machine.</p>
+
+      <h2>Network isolation</h2>
+      <p>The general rule: only the honeypot's ports are reachable from outside. Everything else — SSH management of the machine, the Grafana dashboard, the Loki API — stays restricted to the local network or to <code>127.0.0.1</code>, never exposed.</p>
+      <ul>
+        <li>SSH management port: only accepts connections from the local network.</li>
+        <li>Grafana and Loki: bound to <code>127.0.0.1</code>, accessed via SSH tunnel when needed — never published on the network.</li>
+        <li>Only two ports are actually forwarded on the router: Cowrie's (fake SSH and Telnet).</li>
+      </ul>
+
+      <div class="callout callout--warn">
+        <span class="label">warning · ipv6</span>
+        <p>If your network has public IPv6, firewall rules created carelessly can open a port to the entire internet without any port-forward ever being configured — IPv6 doesn't go through NAT the way IPv4 does. Always check both stacks (v4 and v6) when reviewing firewall rules. More on this in the troubleshooting chapter.</p>
+      </div>
+
+      <h2>The lab's own threat model</h2>
+      <p>Framework applied: <strong>STRIDE</strong>, focused on the surface this project introduces on the network — the honeypot receiving attacks is expected; the real risk is what happens if the isolation fails.</p>
+
+      <table>
+        <thead>
+          <tr><th>Threat</th><th>Scenario</th><th>Mitigation</th><th>Priority</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Elevation of privilege</td>
+            <td>Cowrie sandbox escape failure, execution on the host behind the container</td>
+            <td>Container without <code>--privileged</code>, non-root user, isolated Docker network, always up-to-date image</td>
+            <td><span class="badge badge--high">high</span></td>
+          </tr>
+          <tr>
+            <td>Tampering with evidence</td>
+            <td>Attempt to delete local logs to cover tracks, after a compromise</td>
+            <td>Logs replicated near real-time off the host (Loki), not dependent only on the local copy</td>
+            <td><span class="badge badge--high">high</span></td>
+          </tr>
+          <tr>
+            <td>Information disclosure</td>
+            <td>Dashboard or Loki API accidentally publicly reachable</td>
+            <td>Bind exclusively on <code>127.0.0.1</code>, never forwarded on the router</td>
+            <td><span class="badge badge--high">high</span></td>
+          </tr>
+          <tr>
+            <td>Denial of service</td>
+            <td>Connection volume saturates the machine's CPU/RAM, taking down the IDS itself</td>
+            <td>Resource limits on the container, Suricata ruleset sized to the available hardware</td>
+            <td><span class="badge badge--medium">medium</span></td>
+          </tr>
+          <tr>
+            <td>Spoofing</td>
+            <td>Confusion between the real management service and the honeypot, if on the same port/network</td>
+            <td>SSH management on a non-standard port, only reachable from the local network</td>
+            <td><span class="badge badge--medium">medium</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout--note">
+        <span class="label">note</span>
+        <p>A honeypot receiving unsolicited traffic from the internet is an established practice — that's exactly what it's for. What needs to stay true is that it remains <strong>passive</strong>: it logs and simulates, never attacks back whoever tries to break in.</p>
+      </div>
+
+      <h2>Running in a VM, on your main machine?</h2>
+      <p>If the lab is going to run in a virtual machine inside the computer you use day to day (instead of dedicated hardware), it's worth adjusting expectations: the worst case of an isolation failure stops being "reflash a cheap device" and becomes "something escaped onto the machine you use for work." That doesn't rule the project out, but it justifies hardening the VM itself — disable clipboard and shared folders between host and VM, keep the hypervisor updated, and use snapshots.</p>
+
+      <div class="callout callout--tip">
+        <span class="label">a real advantage of the vm</span>
+        <p>Snapshots let you return to a clean state in seconds — take one right after the OS is installed and hardened, before bringing up any service. It's a safety net that physical hardware doesn't offer without a full reflash.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="index.html"><span class="dir">← Back</span>Start</a>
+        <a class="next" href="02-environment.html"><span class="dir">Continue →</span>Setting Up the Environment</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>

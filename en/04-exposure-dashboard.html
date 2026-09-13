@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exposure &amp; Dashboard — Observation Post</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../04-exposicao-dashboard.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html" class="active"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">chapter 04</p>
+      <h1>Exposure &amp; Dashboard</h1>
+      <p class="lede">Opening the honeypot to the real internet, and building the panel that shows what comes in.</p>
+
+      <h2>Check for CGNAT before anything else</h2>
+      <p>Residential providers (fiber, especially) sometimes don't hand out a real public IP — the customer sits behind a NAT shared by the carrier itself (CGNAT). If that's the case, no port-forward will ever work, no matter how correct the configuration is.</p>
+      <div class="term" data-label="terminal (inside the lan)">
+<pre><code>curl -4 ifconfig.me</code></pre>
+      </div>
+      <p>Then, from a browser on the same network, open <a href="https://canyouseeme.org" target="_blank" rel="noopener">canyouseeme.org</a>, type the port you plan to expose, and click <strong>Check</strong>. This confirms whether the forward is reachable from outside before you spend time debugging something that might be structurally impossible on your end.</p>
+
+      <div class="callout callout--note">
+        <span class="label">note</span>
+        <p>If you confirm CGNAT, traditional port-forwarding won't work — the alternatives are asking your provider for a public IP, or using a reverse tunnel (Cloudflare Tunnel, for example), which changes this guide's architecture.</p>
+      </div>
+
+      <h2>Configure port forwarding</h2>
+      <p>In your router's admin panel (the menu name varies by vendor: <em>Port Forwarding</em>, <em>Virtual Server</em>, <em>NAT</em>), create two rules:</p>
+
+      <table>
+        <thead><tr><th>Field</th><th>SSH rule</th><th>Telnet rule</th></tr></thead>
+        <tbody>
+          <tr><td>External port</td><td>22</td><td>23</td></tr>
+          <tr><td>Internal port</td><td>2222</td><td>2223</td></tr>
+          <tr><td>Internal IP</td><td colspan="2"><code>VM_IP</code></td></tr>
+          <tr><td>Protocol</td><td colspan="2">TCP</td></tr>
+        </tbody>
+      </table>
+
+      <p>Test from truly outside (mobile data, not Wi-Fi on the same network):</p>
+      <div class="term" data-label="terminal (external network)">
+<pre><code>ssh -p 22 root@<span class="v">YOUR_PUBLIC_IP</span></code></pre>
+      </div>
+      <p>It should drop you into Cowrie's fake shell.</p>
+
+      <h2>Centralizing logs: Grafana Alloy</h2>
+      <p>The agent that reads log files and ships them to the log database (Loki) runs natively on the VM — not in a container, for the same reason as Suricata: it needs direct access to the filesystem.</p>
+
+      <div class="callout callout--note">
+        <span class="label">about the choice</span>
+        <p>The agent traditionally used with Loki (Promtail) has been discontinued — the official replacement is <strong>Grafana Alloy</strong>, which uses its own configuration language (River) instead of YAML.</p>
+      </div>
+
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo mkdir -p /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/grafana.asc https://apt.grafana.com/gpg-full.key
+sudo chmod 644 /etc/apt/keyrings/grafana.asc
+echo "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+
+sudo apt update
+sudo apt install -y alloy</code></pre>
+      </div>
+
+      <div class="term" data-label="/etc/alloy/config.alloy">
+<pre><code>local.file_match "suricata" {
+  path_targets = [{"__path__" = "/var/log/suricata/eve.json", "job" = "suricata"}]
+}
+
+local.file_match "cowrie" {
+  path_targets = [{"__path__" = "/var/lib/docker/volumes/cowrie-honeypot_cowrie-var/_data/log/cowrie/cowrie.json", "job" = "cowrie"}]
+}
+
+loki.source.file "suricata_tail" {
+  targets    = local.file_match.suricata.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.source.file "cowrie_tail" {
+  targets    = local.file_match.cowrie.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}</code></pre>
+      </div>
+
+      <div class="callout callout--warn">
+        <span class="label">the permission that almost always gets missed</span>
+        <p>Alloy runs as its own system user (<code>alloy</code>), not root. The <code>/var/lib/docker</code> folder usually ships with <code>drwx--x---</code> permissions — only root and the root group can traverse it. That blocks Alloy from reaching Cowrie's log, even though the log file itself has read permission open. Fix it with a targeted ACL, without opening the folder to anyone else:</p>
+      </div>
+      <div class="term" data-label="vm · terminal">
+<pre><code>sudo setfacl -m u:alloy:x /var/lib/docker
+getfacl /var/lib/docker | grep alloy   <span class="c"># confirms: user:alloy:--x</span>
+
+sudo systemctl enable --now alloy
+sudo journalctl -u alloy --since "30 seconds ago" --no-pager | grep -i tailing</code></pre>
+      </div>
+      <p>Two lines saying <code>"start tailing file"</code> should show up — one for Suricata, one for Cowrie.</p>
+
+      <h2>Loki + Grafana</h2>
+      <p>Both run in separate containers, so they need a shared Docker network to see each other — <code>127.0.0.1</code> from inside one container points at itself, not at its neighbor.</p>
+      <div class="term" data-label="vm · terminal">
+<pre><code>docker network create dashboard-net
+
+mkdir -p ~/honeypot-dashboard &amp;&amp; cd ~/honeypot-dashboard
+wget https://raw.githubusercontent.com/grafana/loki/v3.7.0/cmd/loki/loki-local-config.yaml -O loki-config.yaml
+
+docker run --name loki -d \
+  --network dashboard-net \
+  -v $(pwd):/mnt/config \
+  -p 127.0.0.1:3100:3100 \
+  grafana/loki:3.7.0 -config.file=/mnt/config/loki-config.yaml
+
+docker run --name grafana -d \
+  --network dashboard-net \
+  -p 127.0.0.1:3000:3000 \
+  grafana/grafana:latest
+
+<span class="c"># make sure they survive a VM reboot</span>
+docker update --restart unless-stopped loki grafana</code></pre>
+      </div>
+
+      <div class="callout callout--tip">
+        <span class="label">container name, not ip</span>
+        <p>Within the same Docker network, containers resolve each other by name via internal DNS — use <code>http://loki:3100</code> as the Data Source URL in Grafana, not <code>127.0.0.1</code>.</p>
+      </div>
+
+      <p>Access Grafana (which is bound only to <code>127.0.0.1</code>) via an SSH tunnel:</p>
+      <div class="term" data-label="host · terminal">
+<pre><code>ssh -p 2200 -L 3000:127.0.0.1:3000 user@<span class="v">VM_IP</span></code></pre>
+      </div>
+      <p>With the tunnel open, access <code>http://localhost:3000</code> in your machine's browser.</p>
+
+      <h2>Building the panels</h2>
+      <ol>
+        <li><strong>Connections → Data sources → Add data source → Loki</strong>, URL <code>http://loki:3100</code>, <strong>Save &amp; test</strong>.</li>
+        <li><strong>Dashboards → New → New Dashboard → Add visualization</strong>, pick Loki as the source.</li>
+        <li>In the query editor, click <strong>Code</strong> (the default mode is visual and doesn't accept pasting the query directly) and paste one of the queries below.</li>
+      </ol>
+
+      <h3>Honeypot attempts over time</h3>
+      <p>Visualization type: <em>Time series</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>sum(count_over_time({job="cowrie"}[5m]))</code></pre>
+      </div>
+
+      <h3>Suricata alerts by severity</h3>
+      <p>Visualization type: <em>Bar chart</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>sum by (severity) (count_over_time({job="suricata"} | json | alert_severity != "" [5m]))</code></pre>
+      </div>
+
+      <h3>Top source IPs</h3>
+      <p>Visualization type: <em>Table</em>.</p>
+      <div class="term" data-label="logql">
+<pre><code>topk(10, sum by (src_ip) (count_over_time({job="cowrie"} | json [1h])))</code></pre>
+      </div>
+
+      <div class="callout callout--note">
+        <span class="label">note</span>
+        <p>The severity panel will probably stay empty at first — Suricata's default ruleset tends to trigger more on pattern/count (several brute-force attempts in a window, for instance) than on a single isolated connection. It starts filling in as real attack traffic arrives.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="03-suricata-cowrie.html"><span class="dir">← Back</span>IDS + Honeypot</a>
+        <a class="next" href="05-troubleshooting.html"><span class="dir">Continue →</span>Troubleshooting</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>

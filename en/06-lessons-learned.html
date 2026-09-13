@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lessons Learned — Observation Post</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../06-licoes.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html" class="active"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <p class="eyebrow">chapter 06</p>
+      <h1>Lessons Learned</h1>
+      <p class="lede">What's left after building this from scratch, and where to go from here.</p>
+
+      <h2>Principles that held up in practice</h2>
+      <ul>
+        <li><strong>Two independent sources of truth beat one sophisticated one.</strong> The honeypot and the IDS never depended on each other to work — when one had a configuration problem, the other kept logging normally, and that independence was what made diagnosis possible at several points.</li>
+        <li><strong>A minimal container cuts both ways.</strong> Cowrie's image not having basic utilities is great for reducing attack surface, but it also breaks common debugging habits (like using <code>docker exec ... tail</code>) — always worth checking what an "official" image actually contains before assuming.</li>
+        <li><strong>IPv4 and IPv6 are two different exposure surfaces.</strong> A firewall rule written with only IPv4 in mind can leave a whole hole on the IPv6 side, with no obvious sign that it happened.</li>
+        <li><strong>"No error" isn't the same as "working."</strong> More than once, a service came up without complaining (Suricata with the wrong interface, Alloy without read permission) and simply didn't do what it was supposed to, silently. Validating the end-to-end result matters more than trusting "no error appeared."</li>
+        <li><strong>Snapshots change your relationship with risk.</strong> Having the option to return to a clean state in seconds makes it safer to test riskier changes than would be reasonable to attempt on physical hardware without that safety net.</li>
+      </ul>
+
+      <div class="callout callout--signal">
+        <span class="label">the end result</span>
+        <p>A honeypot receiving real, unsolicited attempts from the internet, an IDS independently classifying that traffic, and a dashboard showing both sides of the story in real time — built, broken, and fixed enough to become this guide.</p>
+      </div>
+
+      <h2>Possible next steps</h2>
+      <ul>
+        <li><strong>Geolocation enrichment.</strong> A GeoIP lookup stage (MaxMind GeoLite2) before logs reach Loki enables a map panel showing where attempts come from.</li>
+        <li><strong>More honeypot protocols.</strong> Cowrie covers SSH/Telnet; there are honeypots specialized in other services (HTTP, databases, RDP) that could run in parallel, each on its own isolated network.</li>
+        <li><strong>Active alerting.</strong> Instead of only watching the dashboard, configure Grafana to notify (email, webhook) when a specific pattern shows up — a spike in attempts, or a high-severity Suricata signature.</li>
+        <li><strong>Move to dedicated hardware.</strong> If the lab is running in a VM on your everyday machine, it's worth considering moving it to its own device once the setup is validated — it shrinks the worst case of an isolation failure back down to "just that device," not your work machine.</li>
+      </ul>
+
+      <h2>Sources and official documentation</h2>
+      <ul>
+        <li><a href="https://docs.suricata.io/en/latest/quickstart.html" target="_blank" rel="noopener">Suricata — Quickstart guide</a></li>
+        <li><a href="https://docs.suricata.io/en/latest/rule-management/adding-your-own-rules.html" target="_blank" rel="noopener">Suricata — Adding Your Own Rules</a></li>
+        <li><a href="https://github.com/cowrie/cowrie" target="_blank" rel="noopener">Cowrie — official repository</a></li>
+        <li><a href="https://hub.docker.com/r/cowrie/cowrie" target="_blank" rel="noopener">Cowrie — official Docker image</a></li>
+        <li><a href="https://grafana.com/docs/loki/latest/setup/install/docker/" target="_blank" rel="noopener">Grafana Loki — Install with Docker</a></li>
+        <li><a href="https://grafana.com/docs/alloy/latest/set-up/install/linux/" target="_blank" rel="noopener">Grafana Alloy — Install on Linux</a></li>
+        <li><a href="https://grafana.com/docs/alloy/latest/monitor/monitor-logs-from-file/" target="_blank" rel="noopener">Grafana Alloy — Monitor logs from a local file</a></li>
+        <li><a href="https://www.virtualbox.org/manual/ch08.html" target="_blank" rel="noopener">VBoxManage — command reference</a></li>
+      </ul>
+
+      <div class="callout callout--note">
+        <span class="label">usage license</span>
+        <p>This material was written as a personal record of a defensive security lab, for educational purposes. Feel free to adapt it, republish it with attribution, or use it as a base for your own project.</p>
+      </div>
+
+      <div class="page-nav">
+        <a class="prev" href="05-troubleshooting.html"><span class="dir">← Back</span>Troubleshooting</a>
+        <a class="next" href="index.html"><span class="dir">Start →</span>Back to the beginning</a>
+      </div>
+
+      <div class="site-footer">Observation Post — honeypot + ids + dashboard · end of guide</div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>

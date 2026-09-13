@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Observation Post — Honeypot + IDS lab</title>
+<meta name="description" content="Full tutorial: build a honeypot (Cowrie) correlated with an IDS (Suricata) and a dashboard (Grafana + Loki) in an isolated lab, from scratch to real internet traffic.">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="sidebar-brand"><span class="dot"></span><span>Observation Post</span></div>
+    <span class="sidebar-tag">honeypot + ids + dashboard</span>
+    <a class="lang-toggle" href="../index.html">🌐 Ler em português</a>
+
+    <div class="nav-group-label">guide</div>
+    <ul class="nav-list">
+      <li><a href="index.html" class="active"><span class="n">00</span> Start</a></li>
+      <li><a href="01-architecture.html"><span class="n">01</span> Architecture &amp; Threat Model</a></li>
+      <li><a href="02-environment.html"><span class="n">02</span> Setting Up the Environment</a></li>
+      <li><a href="03-suricata-cowrie.html"><span class="n">03</span> IDS + Honeypot</a></li>
+      <li><a href="04-exposure-dashboard.html"><span class="n">04</span> Exposure &amp; Dashboard</a></li>
+      <li><a href="05-troubleshooting.html"><span class="n">05</span> Troubleshooting</a></li>
+      <li><a href="06-lessons-learned.html"><span class="n">06</span> Lessons Learned</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <button data-sidebar-toggle aria-label="Open menu">≡</button>
+      <span class="sidebar-tag" style="margin:0;">Observation Post</span>
+    </div>
+
+    <div class="content">
+      <div class="hero">
+        <p class="eyebrow">tutorial · defensive security lab</p>
+        <h1>A honeypot, an IDS watching it, and a dashboard showing what shows up.</h1>
+        <p class="lede">This guide builds, from scratch, an isolated lab where a fake SSH/Telnet service (Cowrie) receives real, unsolicited traffic from the internet, a network sensor (Suricata) observes and classifies every packet, and a dashboard (Grafana + Loki) shows both sides of the story in real time.</p>
+      </div>
+
+      <div class="hero-diagram">
+        <svg viewBox="0 0 760 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture diagram: the internet and the analyst connect to the VM through the router and an SSH tunnel; inside the VM, Cowrie and Suricata exchange observation, and logs flow through Alloy, Loki, and Grafana.">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" style="fill:var(--text-faint)"/>
+            </marker>
+            <marker id="arrowAmber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" style="fill:var(--amber)"/>
+            </marker>
+          </defs>
+
+          <rect x="16" y="30" width="130" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="81" y="63" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">Internet</text>
+
+          <rect x="16" y="374" width="130" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="81" y="398" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">You</text>
+          <text x="81" y="415" text-anchor="middle" style="font-family:var(--font-mono);font-size:10px;fill:var(--text-faint)">(analyst)</text>
+
+          <rect x="210" y="30" width="150" height="56" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="285" y="58" text-anchor="middle" style="font-family:var(--font-mono);font-size:13px;fill:var(--text)">Router</text>
+          <text x="285" y="74" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--amber)">only 2 ports forwarded</text>
+
+          <rect x="420" y="14" width="324" height="432" rx="12" style="fill:none;stroke:var(--border)" stroke-dasharray="4 4"/>
+          <text x="438" y="34" style="font-family:var(--font-mono);font-size:10px;fill:var(--text-faint)">VM (VirtualBox · Debian)</text>
+
+          <rect x="440" y="54" width="130" height="60" rx="8" style="fill:var(--amber-soft);stroke:var(--amber-border)"/>
+          <text x="505" y="80" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--amber)">Cowrie</text>
+          <text x="505" y="96" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--text-faint)">ssh/telnet honeypot</text>
+
+          <rect x="586" y="54" width="140" height="60" rx="8" style="fill:var(--teal-soft);stroke:var(--teal-border)"/>
+          <text x="656" y="80" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--teal)">Suricata</text>
+          <text x="656" y="96" text-anchor="middle" style="font-family:var(--font-mono);font-size:9px;fill:var(--text-faint)">ids / af-packet</text>
+
+          <line x1="572" y1="84" x2="584" y2="84" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="584" y1="92" x2="572" y2="92" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <text x="578" y="76" text-anchor="middle" style="font-family:var(--font-mono);font-size:8px;fill:var(--text-faint)">observes</text>
+
+          <rect x="440" y="164" width="284" height="46" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="582" y="192" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--text)">Alloy</text>
+
+          <rect x="440" y="244" width="284" height="46" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+          <text x="582" y="272" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--text)">Loki</text>
+
+          <rect x="440" y="324" width="284" height="46" rx="8" style="fill:var(--amber-soft);stroke:var(--amber-border)"/>
+          <text x="582" y="352" text-anchor="middle" style="font-family:var(--font-mono);font-size:12px;fill:var(--amber)">Grafana</text>
+          <text x="582" y="337" text-anchor="middle" style="font-family:var(--font-mono);font-size:8px;fill:var(--text-faint)">127.0.0.1 · never exposed</text>
+
+          <line x1="582" y1="114" x2="582" y2="162" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="582" y1="210" x2="582" y2="242" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="582" y1="290" x2="582" y2="322" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+
+          <line x1="146" y1="58" x2="208" y2="58" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+          <line x1="360" y1="58" x2="438" y2="58" style="stroke:var(--text-faint);stroke-width:1.5" marker-end="url(#arrow)"/>
+
+          <path d="M146,402 C 300,402 300,347 438,347" style="fill:none;stroke:var(--amber);stroke-width:1.5" stroke-dasharray="3 4" marker-end="url(#arrowAmber)"/>
+          <text x="270" y="418" style="font-family:var(--font-mono);font-size:9px;fill:var(--amber)">SSH tunnel (-L 3000)</text>
+        </svg>
+      </div>
+
+      <div class="callout callout--note">
+        <span class="label">about this guide</span>
+        <p>Written from a real implementation, including the configuration mistakes that showed up along the way — they get their own section (chapter 5), because they're exactly the kind of thing anyone following this path will also run into.</p>
+      </div>
+
+      <h2>What you'll build</h2>
+      <p>A small but complete system, with four pieces that support each other: a fake service that looks vulnerable and logs everything an attacker tries to do; a network sensor that independently observes and classifies that same traffic; a log pipeline that centralizes both; and a visual panel to follow it all live.</p>
+
+      <div class="readout">
+        <span class="readout-title">stack used</span>
+        <dl class="readout-grid">
+          <div class="readout-row"><dt>Honeypot</dt><dd>Cowrie</dd></div>
+          <div class="readout-row"><dt>IDS</dt><dd>Suricata</dd></div>
+          <div class="readout-row"><dt>Log collection</dt><dd>Grafana Alloy</dd></div>
+          <div class="readout-row"><dt>Storage</dt><dd>Loki</dd></div>
+          <div class="readout-row"><dt>Visualization</dt><dd>Grafana</dd></div>
+          <div class="readout-row"><dt>Environment</dt><dd>VirtualBox + Debian 12</dd></div>
+        </dl>
+      </div>
+
+      <h2>Who this guide is for</h2>
+      <p>For anyone with some familiarity with Linux, the command line, and Docker, who wants a hands-on defensive-security project — whether as a portfolio piece, a way to learn networking, or just out of curiosity about what actually knocks on the door of a service exposed to the internet.</p>
+
+      <h2>Chapters</h2>
+      <div class="chapters">
+        <a class="chapter-card" href="01-architecture.html">
+          <span class="num">01</span>
+          <span class="info"><h3>Architecture &amp; Threat Model</h3><p>Why this design, and what can go wrong in the lab itself.</p></span>
+        </a>
+        <a class="chapter-card" href="02-environment.html">
+          <span class="num">02</span>
+          <span class="info"><h3>Setting Up the Environment</h3><p>An isolated VM, access hardening, Docker.</p></span>
+        </a>
+        <a class="chapter-card" href="03-suricata-cowrie.html">
+          <span class="num">03</span>
+          <span class="info"><h3>IDS + Honeypot</h3><p>Installing Suricata and Cowrie, and confirming one sees the other.</p></span>
+        </a>
+        <a class="chapter-card" href="04-exposure-dashboard.html">
+          <span class="num">04</span>
+          <span class="info"><h3>Exposure &amp; Dashboard</h3><p>Opening it up to the real internet, and building the observation panel.</p></span>
+        </a>
+        <a class="chapter-card" href="05-troubleshooting.html">
+          <span class="num">05</span>
+          <span class="info"><h3>Troubleshooting</h3><p>The real errors found in this implementation, and how to fix each one.</p></span>
+        </a>
+        <a class="chapter-card" href="06-lessons-learned.html">
+          <span class="num">06</span>
+          <span class="info"><h3>Lessons Learned</h3><p>What's left after the project, and where to go from here.</p></span>
+        </a>
+      </div>
+
+      <div class="page-nav">
+        <a class="next" href="01-architecture.html"><span class="dir">Start →</span>Architecture &amp; Threat Model</a>
+      </div>
+
+      <div class="site-footer">Personal defensive security lab · published as educational material</div>
+    </div>
+  </div>
+</div>
+<script src="../script.js"></script>
+</body>
+</html>
